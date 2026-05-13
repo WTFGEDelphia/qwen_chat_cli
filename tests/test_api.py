@@ -1,162 +1,435 @@
 """
-Qwen API Server 测试套件
-
-覆盖场景:
-- /new 命令（流式/非流式）
-- 多模态 content 兼容
-- 基础健康检查
+Qwen API Server 测试套件 - 模块化版本
 """
-import pytest
-import httpx
-import json
+from fastapi.testclient import TestClient
 
-BASE_URL = "http://localhost:8000"
-API_KEY = "sk-qwen-studio-123456"
-
-headers = {"Authorization": f"Bearer {API_KEY}"}
+from conftest import FakeQwenClient, make_test_client
+from qwen_gateway.app import create_app
+from qwen_gateway.settings import Settings
 
 
-@pytest.mark.asyncio
-async def test_health_check():
-    """测试健康检查端点"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{BASE_URL}/health")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-        assert "mode" in data
+def test_health_check():
+    with make_test_client() as client:
+        resp = client.get("/health")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
 
 
-@pytest.mark.asyncio
-async def test_list_models():
-    """测试模型列表接口"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v1/models",
-            headers=headers
+def test_list_models():
+    with make_test_client() as client:
+        resp = client.get("/v1/models", headers={"Authorization": "Bearer sk-test"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["object"] == "list"
+    assert len(data["data"]) == 2
+
+
+def test_chat_completion_non_stream_success():
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+            },
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "data" in data
-        assert len(data["data"]) > 0
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["choices"][0]["message"]["content"] == "pong"
+    assert data["choices"][0]["finish_reason"] == "stop"
 
 
-@pytest.mark.asyncio
-async def test_new_command_non_stream():
-    """测试 /new 命令（非流式响应）"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
+def test_chat_completion_non_stream_upstream_error_returns_502():
+    with make_test_client(FakeQwenClient(chunks=[{"error": "Qwen 官方拒绝：401"}])) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+            },
+        )
+
+    assert resp.status_code == 502
+    assert resp.json() == {
+        "error": {
+            "message": "Qwen 官方拒绝：401",
+            "type": "server_error",
+        }
+    }
+
+
+def test_new_command_non_stream():
+    with make_test_client() as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
             json={
                 "model": "qwen3.6-plus",
                 "messages": [{"role": "user", "content": "/new"}],
-                "stream": False
-            }
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "choices" in data
-        content = data["choices"][0]["message"]["content"]
-        # stateful 模式返回 "已创建新会话"，stateless 模式返回提示
-        assert "已创建新会话" in content or "stateless" in content
-
-
-@pytest.mark.asyncio
-async def test_new_command_stream():
-    """测试 /new 命令（流式响应）"""
-    async with httpx.AsyncClient() as client:
-        async with client.stream(
-            "POST",
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": "qwen3.6-plus",
-                "messages": [{"role": "user", "content": "/new"}],
-                "stream": True
+                "stream": False,
             },
-            timeout=30
-        ) as response:
-            assert response.status_code == 200
-            assert "text/event-stream" in response.headers.get(
-                "content-type", ""
-            )
-
-            # 验证 SSE 格式
-            chunks = []
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    if line == "data: [DONE]":
-                        break
-                    try:
-                        data = json.loads(line[6:])
-                        if "choices" in data:
-                            chunks.append(
-                                data["choices"][0]["delta"].get("content", "")
-                            )
-                    except json.JSONDecodeError:
-                        pass
-
-            full_content = "".join(chunks)
-            assert "已创建新会话" in full_content or "stateless" in full_content
-
-
-@pytest.mark.asyncio
-async def test_new_command_multimodal_text():
-    """测试多模态 content（文本列表）不会崩溃"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": "qwen3.6-plus",
-                "messages": [{
-                    "role": "user",
-                    "content": [{"type": "text", "text": "/new"}]
-                }],
-                "stream": False
-            }
         )
-        # 应该成功响应（200）或参数错误（400），但不应该是 500
-        assert resp.status_code in [200, 400]
+
+    assert resp.status_code == 200
+    assert "已创建新会话" in resp.json()["choices"][0]["message"]["content"]
 
 
-@pytest.mark.asyncio
-async def test_normal_message():
-    """测试正常消息处理"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
+def test_new_command_multimodal_text():
+    with make_test_client() as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
             json={
                 "model": "qwen3.6-plus",
-                "messages": [
-                    {"role": "user", "content": "你好，请自我介绍"}
-                ],
-                "stream": False
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "/new"}]}],
+                "stream": False,
             },
-            timeout=60
         )
-        # 可能因网络/认证失败返回非 200，但至少不应崩溃
-        assert resp.status_code in [200, 401, 500]
+
+    assert resp.status_code == 200
+    assert "已创建新会话" in resp.json()["choices"][0]["message"]["content"]
 
 
-@pytest.mark.asyncio
-async def test_empty_messages():
-    """测试空消息列表处理"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
+def test_empty_messages_returns_422():
+    with make_test_client() as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+            json={"model": "qwen3.6-plus", "messages": [], "stream": False},
+        )
+
+    assert resp.status_code == 422
+
+
+def test_missing_api_key_returns_401():
+    with make_test_client() as client:
+        resp = client.get("/v1/models")
+
+    assert resp.status_code == 401
+
+
+def test_chat_completion_stream_still_uses_chat_completion_chunks():
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
             json={
                 "model": "qwen3.6-plus",
-                "messages": [],
-                "stream": False
-            }
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": True,
+            },
         )
-        # 应该返回错误，但不应该崩溃
-        assert resp.status_code in [400, 422, 500]
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert '"object": "chat.completion.chunk"' in body
+    assert '"content": "pong"' in body
+    assert "data: [DONE]" in body
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
+def test_openai_responses_non_stream_success():
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "input": "ping",
+                "stream": False,
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["object"] == "response"
+    assert data["status"] == "completed"
+    assert data["model"] == "qwen3.6-plus"
+    assert data["output_text"] == "pong"
+    assert data["output"][0]["type"] == "message"
+    assert data["output"][0]["content"][0]["text"] == "pong"
+
+
+def test_openai_responses_stream_success():
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "input": [{"role": "user", "content": "ping"}],
+                "stream": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: response.created" in body
+    assert "event: response.output_text.delta" in body
+    assert '"delta": "pong"' in body
+    assert "event: response.completed" in body
+
+
+def test_openai_responses_stream_upstream_error_emits_response_failed():
+    with make_test_client(FakeQwenClient(chunks=[{"error": "Qwen upstream error"}])) as client:
+        resp = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "input": "ping",
+                "stream": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: error" in body
+    assert "event: response.failed" in body
+
+
+def test_openai_responses_non_stream_upstream_error_returns_502():
+    with make_test_client(FakeQwenClient(chunks=[{"error": "Qwen upstream error"}])) as client:
+        resp = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "input": "ping",
+                "stream": False,
+            },
+        )
+
+    assert resp.status_code == 502
+    data = resp.json()
+    assert data["error"]["type"] == "server_error"
+    assert data["error"]["message"] == "Qwen upstream error"
+
+
+def test_openai_responses_unsupported_feature_returns_400():
+    app = create_app(
+        settings=Settings(
+            qwen_email="dev@example.com",
+            qwen_password="plain-password",
+            api_key="sk-test",
+            run_mode="stateful",
+            compat_mode="strict",
+        ),
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "input": "ping",
+                "tools": [{"type": "web_search_preview"}],
+            },
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["type"] == "unsupported_feature"
+
+
+def test_anthropic_messages_non_stream_success():
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": "Bearer sk-test",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["type"] == "message"
+    assert data["role"] == "assistant"
+    assert data["model"] == "qwen3.6-plus"
+    assert data["content"] == [{"type": "text", "text": "pong"}]
+    assert data["stop_reason"] == "end_turn"
+
+
+def test_anthropic_messages_stream_success():
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": "Bearer sk-test",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: message_start" in body
+    assert "event: content_block_start" in body
+    assert "event: content_block_delta" in body
+    assert '"text": "pong"' in body
+    assert "event: message_delta" in body
+    assert "event: message_stop" in body
+
+
+def test_anthropic_messages_unsupported_feature_returns_400():
+    app = create_app(
+        settings=Settings(
+            qwen_email="dev@example.com",
+            qwen_password="plain-password",
+            api_key="sk-test",
+            run_mode="stateful",
+            compat_mode="strict",
+        ),
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/messages",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "ping"}],
+                "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+            },
+        )
+
+    assert resp.status_code == 400
+    data = resp.json()
+    assert data["type"] == "error"
+    assert data["error"]["type"] == "unsupported_feature"
+
+
+def test_openai_responses_returns_503_when_credentials_missing():
+    app = create_app(settings=Settings(api_key="sk-test"))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer sk-test"},
+            json={"model": "qwen3.6-plus", "input": "你好"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "message": "Qwen client is not ready",
+            "type": "service_unavailable",
+        }
+    }
+
+
+def test_anthropic_messages_returns_503_when_credentials_missing():
+    app = create_app(settings=Settings(api_key="sk-test"))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "你好"}],
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "type": "error",
+        "error": {
+            "message": "Qwen client is not ready",
+            "type": "service_unavailable",
+        },
+    }
+
+
+def test_anthropic_messages_upstream_error_returns_anthropic_format():
+    with make_test_client(FakeQwenClient(chunks=[{"error": "Qwen upstream error"}])) as client:
+        resp = client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": "Bearer sk-test",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+
+    assert resp.status_code == 502
+    data = resp.json()
+    # Anthropic 端点应返回 Anthropic 格式错误，而非 OpenAI 格式
+    assert data["type"] == "error"
+    assert data["error"]["type"] == "server_error"
+    assert "Qwen upstream error" in data["error"]["message"]
+
+
+def test_responses_tools_accepted_in_lenient_mode():
+    """lenient 模式下 /v1/responses 接受 tools 字段（默认）"""
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "hello"}])) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "qwen3.6-plus",
+                "input": "hi",
+                "tools": [{"type": "web_search_preview"}],
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["output_text"] == "hello"
+
+
+def test_messages_tools_accepted_in_lenient_mode():
+    """lenient 模式下 /v1/messages 接受 tools 字段（默认）"""
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "message"
+
+
+def test_messages_thinking_accepted_in_lenient_mode():
+    """lenient 模式下 /v1/messages 接受 thinking 字段（默认）"""
+    with make_test_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "enabled", "budget_tokens": 16000},
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+    assert response.status_code == 200

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全问题报告
+    url: https://github.com/WTFGEDelphia/qwen_chat_cli/security/policy
+    about: 请不要在公开 Issue 中披露真实凭证、token 或可复用攻击细节。
+  - name: 发布说明
+    url: https://github.com/WTFGEDelphia/qwen_chat_cli/blob/main/docs/release-runbook.md
+    about: 查看 GitHub Release、tag 和安装包验证流程。
