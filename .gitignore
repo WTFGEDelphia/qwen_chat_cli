@@ -52,6 +52,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Local git worktrees
+.worktrees/
+
 # Translations
 *.mo
 *.pot
@@ -148,6 +151,9 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Model cache runtime file
+model_cache.json
+
 # Environments
 .env
 .envrc
@@ -218,3 +224,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Git worktrees
+.worktrees/
