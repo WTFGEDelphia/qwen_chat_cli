@@ -72,7 +72,7 @@ jobs:
           test -n "$(find dist -maxdepth 1 -name 'qwen_gateway-*.whl' -print -quit)"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.whl
