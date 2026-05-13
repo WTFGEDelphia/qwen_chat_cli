@@ -52,6 +52,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Local git worktrees
+.worktrees/
+
 # Translations
 *.mo
 *.pot
@@ -218,3 +221,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Git worktrees
+.worktrees/

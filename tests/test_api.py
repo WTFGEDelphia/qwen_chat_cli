@@ -1,162 +1,156 @@
 """
-Qwen API Server 测试套件
-
-覆盖场景:
-- /new 命令（流式/非流式）
-- 多模态 content 兼容
-- 基础健康检查
+Qwen API Server 测试套件 - 模块化版本
 """
-import pytest
-import httpx
-import json
+import asyncio
 
-BASE_URL = "http://localhost:8000"
-API_KEY = "sk-qwen-studio-123456"
+from fastapi.testclient import TestClient
 
-headers = {"Authorization": f"Bearer {API_KEY}"}
+from qwen_gateway.app import create_app
+from qwen_gateway.settings import Settings
 
 
-@pytest.mark.asyncio
-async def test_health_check():
-    """测试健康检查端点"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{BASE_URL}/health")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-        assert "mode" in data
+class FakeQwenClient:
+    def __init__(self, chunks=None):
+        self.chunks = chunks or [{"phase": "", "content": "你好，测试响应"}]
+        self.active_chat_id = None
+        self.active_parent_id = None
+        self.session_lock = asyncio.Lock()
+        self.closed = False
+
+    async def login(self, pm):
+        return True
+
+    async def create_new_chat(self, pm):
+        return "chat-api-1"
+
+    async def stream_chat(self, pm, run_mode, prompt, model):
+        for chunk in self.chunks:
+            yield chunk
+
+    async def close(self):
+        self.closed = True
 
 
-@pytest.mark.asyncio
-async def test_list_models():
-    """测试模型列表接口"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v1/models",
-            headers=headers
+def make_client(fake_client: FakeQwenClient | None = None) -> TestClient:
+    client_obj = fake_client or FakeQwenClient()
+
+    def factory(email: str, password: str):
+        return client_obj
+
+    app = create_app(
+        settings=Settings(
+            qwen_email="dev@example.com",
+            qwen_password="plain-password",
+            api_key="sk-test",
+            run_mode="stateful",
+        ),
+        client_factory=factory,
+    )
+    return TestClient(app)
+
+
+def test_health_check():
+    with make_client() as client:
+        resp = client.get("/health")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+def test_list_models():
+    with make_client() as client:
+        resp = client.get("/v1/models", headers={"Authorization": "Bearer sk-test"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["object"] == "list"
+    assert len(data["data"]) == 2
+
+
+def test_chat_completion_non_stream_success():
+    with make_client(FakeQwenClient(chunks=[{"phase": "", "content": "pong"}])) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+            },
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "data" in data
-        assert len(data["data"]) > 0
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["choices"][0]["message"]["content"] == "pong"
+    assert data["choices"][0]["finish_reason"] == "stop"
 
 
-@pytest.mark.asyncio
-async def test_new_command_non_stream():
-    """测试 /new 命令（非流式响应）"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
+def test_chat_completion_non_stream_upstream_error_returns_502():
+    with make_client(FakeQwenClient(chunks=[{"error": "Qwen 官方拒绝：401"}])) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+            json={
+                "model": "qwen3.6-plus",
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+            },
+        )
+
+    assert resp.status_code == 502
+    assert resp.json() == {
+        "error": {
+            "message": "Qwen 官方拒绝：401",
+            "type": "server_error",
+        }
+    }
+
+
+def test_new_command_non_stream():
+    with make_client() as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
             json={
                 "model": "qwen3.6-plus",
                 "messages": [{"role": "user", "content": "/new"}],
-                "stream": False
-            }
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "choices" in data
-        content = data["choices"][0]["message"]["content"]
-        # stateful 模式返回 "已创建新会话"，stateless 模式返回提示
-        assert "已创建新会话" in content or "stateless" in content
-
-
-@pytest.mark.asyncio
-async def test_new_command_stream():
-    """测试 /new 命令（流式响应）"""
-    async with httpx.AsyncClient() as client:
-        async with client.stream(
-            "POST",
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": "qwen3.6-plus",
-                "messages": [{"role": "user", "content": "/new"}],
-                "stream": True
+                "stream": False,
             },
-            timeout=30
-        ) as response:
-            assert response.status_code == 200
-            assert "text/event-stream" in response.headers.get(
-                "content-type", ""
-            )
-
-            # 验证 SSE 格式
-            chunks = []
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    if line == "data: [DONE]":
-                        break
-                    try:
-                        data = json.loads(line[6:])
-                        if "choices" in data:
-                            chunks.append(
-                                data["choices"][0]["delta"].get("content", "")
-                            )
-                    except json.JSONDecodeError:
-                        pass
-
-            full_content = "".join(chunks)
-            assert "已创建新会话" in full_content or "stateless" in full_content
-
-
-@pytest.mark.asyncio
-async def test_new_command_multimodal_text():
-    """测试多模态 content（文本列表）不会崩溃"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": "qwen3.6-plus",
-                "messages": [{
-                    "role": "user",
-                    "content": [{"type": "text", "text": "/new"}]
-                }],
-                "stream": False
-            }
         )
-        # 应该成功响应（200）或参数错误（400），但不应该是 500
-        assert resp.status_code in [200, 400]
+
+    assert resp.status_code == 200
+    assert "已创建新会话" in resp.json()["choices"][0]["message"]["content"]
 
 
-@pytest.mark.asyncio
-async def test_normal_message():
-    """测试正常消息处理"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
+def test_new_command_multimodal_text():
+    with make_client() as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
             json={
                 "model": "qwen3.6-plus",
-                "messages": [
-                    {"role": "user", "content": "你好，请自我介绍"}
-                ],
-                "stream": False
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "/new"}]}],
+                "stream": False,
             },
-            timeout=60
         )
-        # 可能因网络/认证失败返回非 200，但至少不应崩溃
-        assert resp.status_code in [200, 401, 500]
+
+    assert resp.status_code == 200
+    assert "已创建新会话" in resp.json()["choices"][0]["message"]["content"]
 
 
-@pytest.mark.asyncio
-async def test_empty_messages():
-    """测试空消息列表处理"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": "qwen3.6-plus",
-                "messages": [],
-                "stream": False
-            }
+def test_empty_messages_returns_422():
+    with make_client() as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+            json={"model": "qwen3.6-plus", "messages": [], "stream": False},
         )
-        # 应该返回错误，但不应该崩溃
-        assert resp.status_code in [400, 422, 500]
+
+    assert resp.status_code == 422
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
+def test_missing_api_key_returns_401():
+    with make_client() as client:
+        resp = client.get("/v1/models")
+
+    assert resp.status_code == 401
