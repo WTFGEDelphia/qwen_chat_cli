@@ -20,6 +20,7 @@ def test_lifespan_logs_in_creates_initial_chat_and_closes():
             run_mode="stateful",
         ),
         client_factory=client_factory,
+        initialize_model_cache=False,
     )
 
     with TestClient(app):
@@ -33,7 +34,7 @@ def test_lifespan_logs_in_creates_initial_chat_and_closes():
 
 
 def test_chat_returns_503_when_credentials_missing():
-    app = create_app(settings=Settings(api_key="sk-test"))
+    app = create_app(settings=Settings(api_key="sk-test"), initialize_model_cache=False)
 
     with TestClient(app) as client:
         response = client.post(
@@ -53,3 +54,20 @@ def test_chat_returns_503_when_credentials_missing():
             "type": "service_unavailable",
         }
     }
+
+
+def test_lifespan_can_skip_model_cache_initialization(monkeypatch):
+    async def fail_if_cache_fetches_from_network(self):
+        raise AssertionError("model cache should not initialize during isolated tests")
+
+    monkeypatch.setattr(
+        "qwen_gateway.model_cache.ModelCache.fetch_models_from_api",
+        fail_if_cache_fetches_from_network,
+    )
+
+    app = create_app(settings=Settings(api_key="sk-test"), initialize_model_cache=False)
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200

@@ -71,9 +71,7 @@ class ModelCache:
         timestamp = cached_data.get("timestamp", 0)
         return time.time() - timestamp > self.ttl
 
-    # WAF bypass headers: 阿里云 WAF 要求 accept+referer+x-request-id，
-    # 否则返回 HTML 而非 JSON。x-request-id 每次请求动态生成（见 fetch_models_from_api），
-    # accept/referer/User-Agent 为固定值。
+    # Headers aligned with the browser client. x-request-id is generated per request.
     AUTH_HEADERS = {
         "accept": "application/json",
         "referer": "https://chat.qwen.ai/",
@@ -86,8 +84,8 @@ class ModelCache:
         优先使用已认证客户端获取完整模型列表（认证=20个模型），如果未提供或
         返回 401，则降级到未登录模式获取公开模型列表（未登录=3个模型）。
 
-        WAF 注意：认证客户端请求必须携带 AUTH_HEADERS (accept, referer, x-request-id)
-        以绕过阿里云 WAF。不带这些 headers 会返回 HTML 而非 JSON。
+        认证客户端请求会携带与浏览器端一致的 headers，减少网页侧接口返回
+        非 JSON 内容的概率。
 
         Returns:
             格式化后的模型列表数据，失败返回 None
@@ -105,10 +103,10 @@ class ModelCache:
                 )
                 logger.info(f"API 响应状态码：{resp.status_code}, 内容长度：{len(resp.text)}")
 
-                # WAF 返回 HTML 而非 JSON 时，content-type 为 text/html
+                # 网页接口返回 HTML 而非 JSON 时，content-type 通常为 text/html
                 content_type = resp.headers.get("content-type", "")
                 if resp.status_code == 200 and not content_type.startswith("application/json"):
-                    logger.warning(f"认证客户端返回非 JSON 响应 (ct={content_type}), 可能触发 WAF, 降级到未登录模式")
+                    logger.warning(f"认证客户端返回非 JSON 响应 (ct={content_type}), 降级到未登录模式")
                 elif resp.status_code == 401:
                     logger.warning("已认证客户端 session 过期，降级到未登录模式")
                 elif resp.status_code == 200 and content_type.startswith("application/json"):

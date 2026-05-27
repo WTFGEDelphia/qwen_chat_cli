@@ -4,9 +4,9 @@
 
 ## 开始之前
 
-- 这个项目会处理 Qwen Studio 账号、明文密码、登录态、风控令牌和本地 API Key，请不要在提交、Issue、PR、测试样例、截图或日志里放入真实凭证。
+- 这个项目会处理 Qwen Studio 账号、明文密码、登录态和本地 API Key，请不要在提交、Issue、PR、测试样例、截图或日志里放入真实凭证。
 - 项目默认面向本机使用，默认监听 `127.0.0.1`。除非有明确安全设计和文档说明，不要把默认监听地址改成 `0.0.0.0`。
-- 本项目与通义千问无官方关联，也不适合直接部署到公网。
+- 本项目与通义千问无官方关联，不是官方 SDK，也不适合直接部署到公网。请自行确认上游服务条款、账号风控和可用性风险。
 - 当前要求 Python 3.10 或更高版本。
 
 ## 本地开发
@@ -16,7 +16,6 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -e '.[dev]'
-playwright install chromium
 cp .env.example .env
 ```
 

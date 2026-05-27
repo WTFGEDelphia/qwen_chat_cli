@@ -1,6 +1,6 @@
 # 安全策略
 
-`qwen-gateway` 会处理 Qwen Studio 账号、明文密码、本地 API Key、登录态和风控令牌。项目默认只面向本机使用，默认监听 `127.0.0.1`，不建议直接部署到公网。
+`qwen-gateway` 会处理 Qwen Studio 账号、明文密码、本地 API Key 和登录态。项目默认只面向本机使用，默认监听 `127.0.0.1`，不建议直接部署到公网。本项目不是官方 SDK，使用者需要自行确认上游服务条款、账号风控和可用性风险。
 
 ## 支持范围
 
@@ -8,7 +8,7 @@
 
 ## 报告方式
 
-- 不要在公开 Issue、PR、讨论区、日志或截图里贴真实邮箱、密码、API Key、token、cookie、session、风控令牌或可复用的请求头。
+- 不要在公开 Issue、PR、讨论区、日志或截图里贴真实邮箱、密码、API Key、token、cookie、session 或可复用的请求头。
 - 如果仓库启用了 GitHub Private Vulnerability Reporting，请优先使用私密报告。
 - 如果没有启用私密报告，请用不包含敏感数据的最小复现方式联系仓库维护者，或先提交不带攻击细节和敏感数据的占位 Issue，等待转到私下渠道。
 
@@ -30,5 +30,5 @@
 ## 敏感数据处理
 
 - 不要提交真实 `.env` 文件。
-- 不要把真实账号凭证、API Key、token、cookie 或风控令牌写入测试快照。
+- 不要把真实账号凭证、API Key、token、cookie 或 session 写入测试快照。
 - 分享日志前请先脱敏，至少移除 `Authorization`、`Cookie`、`QWEN_PASSWORD`、`API_KEY` 和所有可复用请求头。

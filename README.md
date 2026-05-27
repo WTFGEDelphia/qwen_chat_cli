@@ -2,17 +2,16 @@
 
 基于 FastAPI 的 [Qwen Studio](https://chat.qwen.ai/) 反向代理网关，提供 `stateless`/`stateful` 双模式支持，兼容 OpenAI API 格式。
 
-这个项目提供一个本地 HTTP 服务，把 Qwen Studio 的登录认证转成兼容 OpenAI API 的接口。它默认面向本机使用，因为会处理高敏感度的账号凭证和风控令牌。
+这个项目提供一个本地 HTTP 服务，把 Qwen Studio 的登录认证转成兼容 OpenAI API 的接口。它默认面向本机使用，因为会处理高敏感度的账号凭证、登录态和本地 API Key。
 
-项目采用模块化架构，通过 Playwright 无头浏览器自动抓取风控令牌，并封装 Qwen 官方 API 交互。
+项目采用模块化架构，封装 Qwen Studio 网页侧 API 交互。
 
-本项目与通义千问无官方关联，也不适合部署到公网。
+本项目与通义千问无官方关联，不是官方 SDK，也不适合部署到公网。Qwen Studio 网页侧 API 可能随时变化，使用者需要自行确认并承担上游服务条款、账号风控和可用性风险。
 
 ## 能做什么
 
 - 本地启动兼容 OpenAI API 格式的 HTTP 服务
 - 自动登录 Qwen Studio 并获取认证 token
-- 自动抓取和刷新风控令牌 (`bx-ua`, `bx-umidtoken`)，25 分钟自动刷新
 - 支持 `stateless` 模式（每次请求独立 chat_id，兼容第三方客户端）
 - 支持 `stateful` 模式（全局单 chat_id，后台维护上下文）
 - 支持 `/new` 命令主动重置会话（stateful 模式）
@@ -30,7 +29,6 @@ source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
 python -m pip install -e '.[dev]'
-playwright install chromium
 cp .env.example .env
 # 编辑 .env：填写 QWEN_EMAIL、QWEN_PASSWORD，并把 API_KEY 改成强随机值
 python -m qwen_gateway --mode stateful --port 8000
@@ -52,7 +50,6 @@ curl http://localhost:8000/health
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium
 ```
 
 ### 2. 从 GitHub tag 直接安装
@@ -407,10 +404,11 @@ pytest tests/ -v --cov=qwen_gateway
 
 ## 安全说明
 
-- 这个工具会处理高敏感度账号凭证，只建议在本机运行
+- 这个工具会处理高敏感度账号凭证、登录态和本地 API Key，只建议在本机运行
+- 本项目不是官方 SDK，依赖 Qwen Studio 网页侧接口；使用者需自行确认上游服务条款和账号风险
 - 默认监听 `127.0.0.1`，不要在未设置强 `API_KEY` 时绑定 `0.0.0.0`
 - 不要把它直接部署到公网
-- 不要把真实密码、API_KEY 提交到 Git 仓库、Issue、日志或截图中
+- 不要把真实邮箱、密码、API_KEY、token、cookie、session 提交到 Git 仓库、Issue、日志或截图中
 - 只有在需要浏览器页面跨域调用时才设置 `CORS_ALLOW_ORIGINS`
 
 如果你发现了安全问题，请不要直接在公开 Issue 里贴真实凭证或可复用的敏感数据。
@@ -434,7 +432,7 @@ pytest tests/ -v --cov=qwen_gateway
 
 | 模块 | 说明 |
 |------|------|
-| `browser.py` | `AsyncPlaywrightManager` - 无头浏览器抓取风控令牌 (`bx-ua`, `bx-umidtoken`)，25 分钟自动刷新 |
+| `browser.py` | `AsyncPlaywrightManager` - 请求上下文兼容壳，提供浏览器风格 User-Agent |
 | `client.py` | `AsyncQwenClient` - 封装 Qwen 官方 API 交互，管理登录、会话创建、流式对话 |
 | `settings.py` | 运行时配置 - 读取 `.env`/环境变量，校验运行模式、端口、监听地址和公网暴露风险 |
 | `routes.py` | HTTP 路由定义 - `/health`, `/v1/models`, `/v1/chat/completions`，处理鉴权、请求校验和上游错误 |
@@ -447,7 +445,6 @@ pytest tests/ -v --cov=qwen_gateway
 | 依赖 | 用途 |
 |------|------|
 | FastAPI | 异步 Web 框架 |
-| Playwright | 无头浏览器自动化，获取风控令牌 |
 | httpx | 异步 HTTP 客户端 |
 | Pydantic v2 | 数据验证 |
 | uvicorn | ASGI 服务器 |

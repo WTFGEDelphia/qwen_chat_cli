@@ -672,11 +672,11 @@ class TestModelCacheWithAuth:
         assert result["data"][0]["id"] == "fallback-model"
 
     @pytest.mark.asyncio
-    async def test_authenticated_client_waf_html_response_fallback(self, temp_cache_dir, mock_auth_client):
-        """测试认证客户端返回 200 但 content-type 为 text/html（WAF拦截）时降级到未登录模式
+    async def test_authenticated_client_html_response_fallback(self, temp_cache_dir, mock_auth_client):
+        """测试认证客户端返回 200 但 content-type 为 text/html 时降级到未登录模式
 
-        真实场景：阿里云 WAF 拦截不带 accept/referer/x-request-id 的请求，
-        返回 status=200 但 content-type=text/html 而非 application/json。
+        网页侧接口可能返回 status=200 但 content-type=text/html 而非
+        application/json。
         """
         cache = ModelCache(
             cache_dir=temp_cache_dir,
@@ -684,11 +684,11 @@ class TestModelCacheWithAuth:
             authenticated_client=mock_auth_client
         )
 
-        mock_waf_response = Mock()
-        mock_waf_response.status_code = 200
-        mock_waf_response.text = '<!doctypehtml>...aliyun_waf_aa...'
-        mock_waf_response.headers = {"content-type": "text/html; charset=utf-8"}
-        mock_auth_client.get = AsyncMock(return_value=mock_waf_response)
+        mock_html_response = Mock()
+        mock_html_response.status_code = 200
+        mock_html_response.text = "<!doctype html>..."
+        mock_html_response.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_auth_client.get = AsyncMock(return_value=mock_html_response)
 
         with patch("httpx.AsyncClient") as MockUnauthClient:
             mock_unauth_client = AsyncMock()
@@ -710,7 +710,7 @@ class TestModelCacheWithAuth:
     async def test_authenticated_client_empty_response_non_json_ct_fallback(self, temp_cache_dir, mock_auth_client):
         """测试认证客户端返回 200 空响应且 content-type 非 JSON 时降级到未登录模式
 
-        补充盲区：空响应 + 非 JSON content-type 会先走到 WAF 检测分支
+        补充盲区：空响应 + 非 JSON content-type 会先走到非 JSON 分支
         （not content_type.startswith("application/json")），而非空响应分支。
         """
         cache = ModelCache(
@@ -719,11 +719,11 @@ class TestModelCacheWithAuth:
             authenticated_client=mock_auth_client
         )
 
-        mock_empty_waf_response = Mock()
-        mock_empty_waf_response.status_code = 200
-        mock_empty_waf_response.text = ""
-        mock_empty_waf_response.headers = {"content-type": "text/html; charset=utf-8"}
-        mock_auth_client.get = AsyncMock(return_value=mock_empty_waf_response)
+        mock_empty_html_response = Mock()
+        mock_empty_html_response.status_code = 200
+        mock_empty_html_response.text = ""
+        mock_empty_html_response.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_auth_client.get = AsyncMock(return_value=mock_empty_html_response)
 
         with patch("httpx.AsyncClient") as MockUnauthClient:
             mock_unauth_client = AsyncMock()
@@ -749,8 +749,8 @@ class TestModelCacheWithAuth:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_authenticated_client_passes_waf_headers(self, temp_cache_dir, mock_auth_client):
-        """测试认证客户端请求时传入 WAF bypass headers（accept, referer, x-request-id）"""
+    async def test_authenticated_client_passes_browser_compatible_headers(self, temp_cache_dir, mock_auth_client):
+        """测试认证客户端请求时传入浏览器兼容 headers（accept, referer, x-request-id）"""
         cache = ModelCache(
             cache_dir=temp_cache_dir,
             ttl=1800,

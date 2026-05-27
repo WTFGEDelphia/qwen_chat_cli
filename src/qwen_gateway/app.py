@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -96,6 +97,13 @@ def _is_new_command(req: ChatCompletionReq) -> bool:
     return last_text == "/new"
 
 
+_THINK_BLOCK_RE = re.compile(r"</?think>\n*")
+
+
+def _remove_thinking_tags(text: str) -> str:
+    return _THINK_BLOCK_RE.sub("", text)
+
+
 async def _handle_new_command_text(request: Request) -> JSONResponse | str:
     global qwen_client
 
@@ -180,6 +188,7 @@ def create_app(
     *,
     settings: Settings | None = None,
     client_factory: Callable[[str, str], AsyncQwenClient] = AsyncQwenClient,
+    initialize_model_cache: bool = True,
 ) -> FastAPI:
     """创建 FastAPI 应用"""
     resolved_settings = settings or load_settings()
@@ -190,13 +199,16 @@ def create_app(
         app.state.settings = resolved_settings
         app.state.qwen_ready = False
 
-        # 初始化模型缓存（不立即初始化数据，等登录后绑定认证客户端再初始化）
-        model_cache = ModelCache(
-            cache_dir=resolved_settings.model_cache_dir,
-            ttl=resolved_settings.model_cache_ttl,
-            authenticated_client=None,
-        )
-        set_model_cache(model_cache)
+        if initialize_model_cache:
+            model_cache = ModelCache(
+                cache_dir=resolved_settings.model_cache_dir,
+                ttl=resolved_settings.model_cache_ttl,
+                authenticated_client=None,
+            )
+            set_model_cache(model_cache)
+        else:
+            model_cache = None
+            set_model_cache(None)
 
         # 启动后台定时刷新任务
         refresh_interval = resolved_settings.model_cache_refresh_interval
@@ -210,12 +222,15 @@ def create_app(
                 if model_cache:
                     await model_cache.refresh_cache_background()
 
-        cache_refresh_task = asyncio.create_task(cache_refresh_loop())
+        cache_refresh_task = None
+        if initialize_model_cache:
+            cache_refresh_task = asyncio.create_task(cache_refresh_loop())
 
         # 根据凭证配置决定初始化方式
         if not resolved_settings.credentials_configured:
             logger.warning("Qwen credentials are not configured; chat endpoint will return 503.")
-            await _init_cache(model_cache, "未登录模式")
+            if model_cache is not None:
+                await _init_cache(model_cache, "未登录模式")
             qwen_client = None
         else:
             qwen_client = client_factory(
@@ -225,12 +240,14 @@ def create_app(
             app.state.qwen_ready = await qwen_client.login(pm)
             if not app.state.qwen_ready:
                 logger.error("Qwen login failed; chat endpoint will return 503.")
-                await _init_cache(model_cache, "未登录模式，登录失败降级")
+                if model_cache is not None:
+                    await _init_cache(model_cache, "未登录模式，登录失败降级")
             else:
                 # 绑定认证客户端（仅在登录成功后执行一次，后续不再修改）
-                model_cache.authenticated_client = qwen_client.http_client
-                logger.info("ModelCache 已绑定认证客户端")
-                await _init_cache(model_cache, "认证模式")
+                if model_cache is not None:
+                    model_cache.authenticated_client = qwen_client.http_client
+                    logger.info("ModelCache 已绑定认证客户端")
+                    await _init_cache(model_cache, "认证模式")
                 if resolved_settings.run_mode == "stateful":
                     chat_id = await qwen_client.create_new_chat(pm)
                     if chat_id:
@@ -547,10 +564,8 @@ async def anthropic_messages(
                     yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     return
 
-                # Anthropic 不支持 thinking，过滤 OpenAI 格式的思考标签
-                raw = chunk.get("content", "")
-                # 移除思考阶段起始标签 "忽然\n" 和闭合标签 "\n忽然\n\n"
-                delta = raw.replace("忽然\n", "").replace("\n忽然\n\n", "")
+                # Anthropic Messages has no text block for OpenAI-style thinking tags.
+                delta = _remove_thinking_tags(chunk.get("content", ""))
                 if not delta:
                     continue
                 payload = {
@@ -595,8 +610,7 @@ async def anthropic_messages(
         except (json.JSONDecodeError, AttributeError):
             return _anthropic_error("Unknown error", "server_error", full_text.status_code)
 
-    # Anthropic 不支持 thinking，过滤 OpenAI 格式的思考标签
-    clean_text = full_text.replace("忽然\n", "").replace("\n忽然\n\n", "")
+    clean_text = _remove_thinking_tags(full_text)
     return JSONResponse(
         build_anthropic_message(
             message_id=message_id,

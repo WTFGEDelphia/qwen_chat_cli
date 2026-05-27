@@ -22,6 +22,7 @@ def make_client(fake_client: FakeQwenClient | None = None) -> TestClient:
             run_mode="stateful",
         ),
         client_factory=factory,
+        initialize_model_cache=False,
     )
     return TestClient(app)
 
@@ -203,6 +204,7 @@ def test_openai_responses_unsupported_feature_returns_400():
             run_mode="stateful",
             compat_mode="strict",
         ),
+        initialize_model_cache=False,
     )
     with TestClient(app) as client:
         resp = client.post(
@@ -269,6 +271,61 @@ def test_anthropic_messages_stream_success():
     assert "event: message_stop" in body
 
 
+def test_anthropic_messages_non_stream_removes_thinking_tags():
+    chunks = [
+        {"phase": "thinking_summary", "content": "hidden reasoning"},
+        {"phase": "", "content": "visible answer"},
+    ]
+    with make_client(FakeQwenClient(chunks=chunks)) as client:
+        resp = client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": "Bearer sk-test",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    text = resp.json()["content"][0]["text"]
+    assert "<think>" not in text
+    assert "</think>" not in text
+    assert "hidden reasoning" in text
+    assert "visible answer" in text
+
+
+def test_anthropic_messages_stream_removes_thinking_tags():
+    chunks = [
+        {"phase": "thinking_summary", "content": "hidden reasoning"},
+        {"phase": "", "content": "visible answer"},
+    ]
+    with make_client(FakeQwenClient(chunks=chunks)) as client:
+        resp = client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": "Bearer sk-test",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "qwen3.6-plus",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<think>" not in body
+    assert "</think>" not in body
+    assert "hidden reasoning" in body
+    assert "visible answer" in body
+
+
 def test_anthropic_messages_unsupported_feature_returns_400():
     app = create_app(
         settings=Settings(
@@ -278,6 +335,7 @@ def test_anthropic_messages_unsupported_feature_returns_400():
             run_mode="stateful",
             compat_mode="strict",
         ),
+        initialize_model_cache=False,
     )
     with TestClient(app) as client:
         resp = client.post(
@@ -298,7 +356,7 @@ def test_anthropic_messages_unsupported_feature_returns_400():
 
 
 def test_openai_responses_returns_503_when_credentials_missing():
-    app = create_app(settings=Settings(api_key="sk-test"))
+    app = create_app(settings=Settings(api_key="sk-test"), initialize_model_cache=False)
 
     with TestClient(app) as client:
         response = client.post(
@@ -317,7 +375,7 @@ def test_openai_responses_returns_503_when_credentials_missing():
 
 
 def test_anthropic_messages_returns_503_when_credentials_missing():
-    app = create_app(settings=Settings(api_key="sk-test"))
+    app = create_app(settings=Settings(api_key="sk-test"), initialize_model_cache=False)
 
     with TestClient(app) as client:
         response = client.post(

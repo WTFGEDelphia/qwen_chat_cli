@@ -18,6 +18,7 @@ def make_client() -> TestClient:
             run_mode="stateful",
         ),
         client_factory=factory,
+        initialize_model_cache=False,
     )
     return TestClient(app)
 
